@@ -1,23 +1,26 @@
-
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 local CurrentRoom = workspace:WaitForChild("CurrentRoom")
 
 local env = getgenv and getgenv() or _G
 local KEY = "__ESP_4_CORES"
 
-if env[KEY] and env[KEY].Destroy then
+if env[KEY] and type(env[KEY].Destroy) == "function" then
     pcall(function()
         env[KEY]:Destroy()
     end)
 end
 
 local S = {
+    destroyed = false,
     connections = {},
     highlights = {},
     billboards = {},
-    destroyed = false
+    skillRemote = nil,
+    originalSkillCallback = nil,
+    skillEnabled = true
 }
 
 env[KEY] = S
@@ -47,22 +50,22 @@ local boundRooms = setmetatable({}, {__mode = "k"})
 local boundFolders = setmetatable({}, {__mode = "k"})
 local boundGenerators = setmetatable({}, {__mode = "k"})
 local boundBlots = setmetatable({}, {__mode = "k"})
+local boundPlayers = setmetatable({}, {__mode = "k"})
 
 local function connect(signal, callback)
+    if S.destroyed then return nil end
     local connection = signal:Connect(callback)
     table.insert(S.connections, connection)
     return connection
 end
 
 local function createHighlight(item, name, transparency)
-    if not item or not item.Parent then return end
+    if S.destroyed or not item or not item.Parent then return nil end
 
     local highlightName = name == "PlayerESP"
-        and "__DistrairPlayerHighlight"
-        or name
+        and "__DistrairPlayerHighlight" or name
 
     local h = item:FindFirstChild(highlightName)
-
     if not h or not h:IsA("Highlight") then
         h = Instance.new("Highlight")
         h.Name = highlightName
@@ -76,29 +79,24 @@ local function createHighlight(item, name, transparency)
     h.OutlineTransparency = 0
     h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     h.Enabled = enabled[name]
-
     tracked[name][h] = true
     S.highlights[h] = true
-
     return h
 end
 
 local function addGenerator(item)
-    if not item or boundGenerators[item] then return end
+    if S.destroyed or not item or boundGenerators[item] then return end
     boundGenerators[item] = true
 
     local stats = item:FindFirstChild("Stats")
     local completed = stats and stats:FindFirstChild("Completed")
-
-    if completed and completed.Value == true then
-        return
-    end
+    if completed and completed.Value == true then return end
 
     local h = createHighlight(item, "GeneratorESP", 0.68)
 
     if completed then
         connect(completed:GetPropertyChangedSignal("Value"), function()
-            if completed.Value == true and h then
+            if completed.Value == true and h and h.Parent then
                 tracked.GeneratorESP[h] = nil
                 h:Destroy()
             end
@@ -107,20 +105,15 @@ local function addGenerator(item)
 end
 
 local function onAdded(item)
-    if not item or not item.Parent then return end
-
+    if S.destroyed or not item or not item.Parent then return end
     local parentName = item.Parent.Name
 
-    if parentName == "Generators"
-        or item.Name == "Generator" then
-
+    if parentName == "Generators" or item.Name == "Generator" then
         addGenerator(item)
-
     elseif parentName == "Items" then
-        if item.Name:find("Capsule") then return end
-
-        createHighlight(item, "ItemESP", 0.25)
-
+        if not item.Name:find("Capsule") then
+            createHighlight(item, "ItemESP", 0.25)
+        end
     elseif parentName == "Monsters" then
         createHighlight(item, "MonsterESP", 0.68)
     end
@@ -129,7 +122,6 @@ end
 local function highlightBlotHand(hand)
     task.spawn(function()
         local arm = hand:WaitForChild("Arm", 5)
-
         if arm and not S.destroyed then
             createHighlight(arm, "MonsterESP", 0.68)
         end
@@ -139,12 +131,9 @@ end
 local function bindBlot(entity)
     if not entity:IsA("Part")
         or not entity.Name:find("BlotHandZone")
-        or boundBlots[entity] then
-        return
-    end
+        or boundBlots[entity] then return end
 
     boundBlots[entity] = true
-
     connect(entity.ChildAdded, function(child)
         if child:IsA("Model") then
             highlightBlotHand(child)
@@ -161,9 +150,7 @@ end
 local function bindFolder(folder)
     if boundFolders[folder] then return end
     boundFolders[folder] = true
-
     connect(folder.ChildAdded, onAdded)
-
     for _, item in ipairs(folder:GetChildren()) do
         onAdded(item)
     end
@@ -173,26 +160,18 @@ local function bindRoomChild(child)
     if child.Name == "Monsters"
         or child.Name == "Generators"
         or child.Name == "Items" then
-
         bindFolder(child)
     end
-
     if child.Name == "Generator" then
         onAdded(child)
     end
-
     bindBlot(child)
 end
 
 local function bindRoom(room)
-    if not room:IsA("Model") or boundRooms[room] then
-        return
-    end
-
+    if not room:IsA("Model") or boundRooms[room] then return end
     boundRooms[room] = true
-
     connect(room.ChildAdded, bindRoomChild)
-
     for _, child in ipairs(room:GetChildren()) do
         bindRoomChild(child)
     end
@@ -210,7 +189,6 @@ end
 local function createPlayerBillboard(player, root)
     local name = "__DistrairPlayerBillboard"
     local bill = root:FindFirstChild(name)
-
     if not bill or not bill:IsA("BillboardGui") then
         bill = Instance.new("BillboardGui")
         bill.Name = name
@@ -226,7 +204,6 @@ local function createPlayerBillboard(player, root)
     bill.Enabled = enabled.PlayerESP
 
     local holder = bill:FindFirstChild("Holder")
-
     if not holder then
         holder = Instance.new("Frame")
         holder.Name = "Holder"
@@ -245,102 +222,74 @@ local function createPlayerBillboard(player, root)
     end
 
     local stroke = holder:FindFirstChildOfClass("UIStroke")
-
     if not stroke then
         stroke = Instance.new("UIStroke")
         stroke.Parent = holder
     end
-
     stroke.Color = colors.PlayerESP
     stroke.Thickness = 1
     stroke.Transparency = 0.15
 
-    local function label(name, y, height, size, font)
-        local obj = holder:FindFirstChild(name)
-
+    local function label(labelName, y, height, size, font)
+        local obj = holder:FindFirstChild(labelName)
         if not obj or not obj:IsA("TextLabel") then
             obj = Instance.new("TextLabel")
-            obj.Name = name
+            obj.Name = labelName
             obj.Parent = holder
         end
-
         obj.BackgroundTransparency = 1
         obj.Position = UDim2.fromOffset(3, y)
         obj.Size = UDim2.new(1, -6, 0, height)
         obj.Font = font
         obj.TextSize = size
         obj.TextStrokeTransparency = 0.45
-
         return obj
     end
 
-    local nameLabel = label(
-        "Name", 1, 20, 12, Enum.Font.GothamBold
-    )
-
+    local nameLabel = label("Name", 1, 20, 12, Enum.Font.GothamBold)
     nameLabel.TextColor3 = colors.PlayerESP
     nameLabel.Text = player.DisplayName ~= player.Name
         and (player.DisplayName .. " @" .. player.Name)
         or player.Name
 
-    local info = label(
-        "Info", 20, 18, 10, Enum.Font.Gotham
-    )
-
+    local info = label("Info", 20, 18, 10, Enum.Font.Gotham)
     info.TextColor3 = Color3.fromRGB(245, 245, 245)
-
     S.billboards[bill] = true
-
     return info
 end
 
 local function updatePlayer(player)
-    if player == LocalPlayer then return end
-
+    if S.destroyed or player == LocalPlayer then return end
     local char = player.Character
     local root = getRoot(char)
-
     if not char or not root then return end
 
     createHighlight(char, "PlayerESP", 0.78)
-
     local info = createPlayerBillboard(player, root)
     local myRoot = getRoot(LocalPlayer.Character)
     local hum = char:FindFirstChildOfClass("Humanoid")
 
     if info and myRoot then
-        local distance = math.floor(
-            (root.Position - myRoot.Position).Magnitude + 0.5
-        )
-
-        local hp = hum
-            and math.floor(hum.Health + 0.5)
-            or 0
-
-        info.Text = tostring(distance)
-            .. "m | HP " .. tostring(hp)
+        local distance = math.floor((root.Position - myRoot.Position).Magnitude + 0.5)
+        local hp = hum and math.floor(hum.Health + 0.5) or 0
+        info.Text = tostring(distance) .. "m | HP " .. tostring(hp)
     end
 end
 
 local function bindPlayer(player)
-    if player == LocalPlayer then return end
-
+    if player == LocalPlayer or boundPlayers[player] then return end
+    boundPlayers[player] = true
     connect(player.CharacterAdded, function()
         task.wait(0.35)
-
-        if not S.destroyed then
-            updatePlayer(player)
-        end
+        if not S.destroyed then updatePlayer(player) end
     end)
-
     updatePlayer(player)
 end
 
 local function toggleESP(name)
     enabled[name] = not enabled[name]
-
     for h in pairs(tracked[name]) do
-        if h.Parent then
+        if h and h.Parent then
             h.Enabled = enabled[name]
             h.FillColor = colors[name]
             h.OutlineColor = colors[name]
@@ -349,10 +298,9 @@ local function toggleESP(name)
             tracked[name][h] = nil
         end
     end
-
     if name == "PlayerESP" then
         for bill in pairs(S.billboards) do
-            if bill.Parent then
+            if bill and bill.Parent then
                 bill.Enabled = enabled.PlayerESP
             else
                 S.billboards[bill] = nil
@@ -361,43 +309,53 @@ local function toggleESP(name)
     end
 end
 
+local function supercompleteCallback(...)
+    return "supercomplete"
+end
+
+local function setSkillEnabled(value)
+    S.skillEnabled = value
+    if not S.skillRemote then return end
+
+    local ok, err = pcall(function()
+        S.skillRemote.OnClientInvoke = value
+            and supercompleteCallback
+            or S.originalSkillCallback
+    end)
+    if not ok then
+        warn("Auto Skill Check: " .. tostring(err))
+    end
+end
+
 function S:Destroy()
     if self.destroyed then return end
     self.destroyed = true
 
     for _, connection in ipairs(self.connections) do
-        pcall(function()
-            connection:Disconnect()
-        end)
+        pcall(function() connection:Disconnect() end)
     end
-
     for h in pairs(self.highlights) do
-        pcall(function()
-            h:Destroy()
-        end)
+        pcall(function() h:Destroy() end)
     end
-
     for bill in pairs(self.billboards) do
+        pcall(function() bill:Destroy() end)
+    end
+    if self.skillRemote then
         pcall(function()
-            bill:Destroy()
+            self.skillRemote.OnClientInvoke = self.originalSkillCallback
         end)
     end
-
-    if env[KEY] == self then
-        env[KEY] = nil
-    end
+    if env[KEY] == self then env[KEY] = nil end
 end
 
 for _, room in ipairs(CurrentRoom:GetChildren()) do
     bindRoom(room)
 end
-
 connect(CurrentRoom.ChildAdded, bindRoom)
 
 for _, player in ipairs(Players:GetPlayers()) do
     bindPlayer(player)
 end
-
 connect(Players.PlayerAdded, bindPlayer)
 
 connect(UIS.InputBegan, function(input, processed)
@@ -405,15 +363,15 @@ connect(UIS.InputBegan, function(input, processed)
 
     if input.KeyCode == Enum.KeyCode.PageDown then
         toggleESP("MonsterESP")
-
     elseif input.KeyCode == Enum.KeyCode.PageUp then
         toggleESP("ItemESP")
-
     elseif input.KeyCode == Enum.KeyCode.Home then
         toggleESP("GeneratorESP")
-
     elseif input.KeyCode == Enum.KeyCode.Insert then
         toggleESP("PlayerESP")
+    elseif input.KeyCode == Enum.KeyCode.Delete then
+        setSkillEnabled(not S.skillEnabled)
+        print("Auto Skill Check: " .. (S.skillEnabled and "ON" or "OFF"))
     end
 end)
 
@@ -424,7 +382,40 @@ task.spawn(function()
                 updatePlayer(player)
             end
         end
-
         task.wait(1)
     end
 end)
+
+task.spawn(function()
+    local events = ReplicatedStorage:WaitForChild("Events", 10)
+    if S.destroyed or not events then return end
+
+    local remote = events:WaitForChild("SkillcheckUpdate", 10)
+    if S.destroyed or not remote or not remote:IsA("RemoteFunction") then
+        warn("Auto Skill Check: SkillcheckUpdate indisponivel")
+        return
+    end
+
+    S.skillRemote = remote
+    local original = nil
+    if type(getcallbackvalue) == "function" then
+        local ok, callback = pcall(getcallbackvalue, remote, "OnClientInvoke")
+        if ok and type(callback) == "function" then
+            original = callback
+        end
+    end
+    if not original then
+        local ok, callback = pcall(function()
+            return remote.OnClientInvoke
+        end)
+        if ok and type(callback) == "function" then
+            original = callback
+        end
+    end
+    S.originalSkillCallback = original
+    setSkillEnabled(S.skillEnabled)
+end)
+
+print("VICK ESP + Auto Skill Check carregado")
+print("Home: Maquinas | PageDown: Twisteds | Insert: Players | PageUp: Itens")
+print("Delete: Auto Skill Check supercomplete ON/OFF")
