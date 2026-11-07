@@ -1,0 +1,430 @@
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local CurrentRoom = workspace:WaitForChild("CurrentRoom")
+
+local env = getgenv and getgenv() or _G
+local KEY = "__ESP_4_CORES"
+
+if env[KEY] and env[KEY].Destroy then
+    pcall(function()
+        env[KEY]:Destroy()
+    end)
+end
+
+local S = {
+    connections = {},
+    highlights = {},
+    billboards = {},
+    destroyed = false
+}
+
+env[KEY] = S
+
+local colors = {
+    GeneratorESP = Color3.fromRGB(0, 170, 255),
+    MonsterESP = Color3.fromRGB(255, 45, 45),
+    PlayerESP = Color3.fromRGB(0, 255, 90),
+    ItemESP = Color3.fromRGB(255, 225, 0)
+}
+
+local enabled = {
+    GeneratorESP = true,
+    MonsterESP = true,
+    PlayerESP = true,
+    ItemESP = true
+}
+
+local tracked = {
+    GeneratorESP = setmetatable({}, {__mode = "k"}),
+    MonsterESP = setmetatable({}, {__mode = "k"}),
+    PlayerESP = setmetatable({}, {__mode = "k"}),
+    ItemESP = setmetatable({}, {__mode = "k"})
+}
+
+local boundRooms = setmetatable({}, {__mode = "k"})
+local boundFolders = setmetatable({}, {__mode = "k"})
+local boundGenerators = setmetatable({}, {__mode = "k"})
+local boundBlots = setmetatable({}, {__mode = "k"})
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(S.connections, connection)
+    return connection
+end
+
+local function createHighlight(item, name, transparency)
+    if not item or not item.Parent then return end
+
+    local highlightName = name == "PlayerESP"
+        and "__DistrairPlayerHighlight"
+        or name
+
+    local h = item:FindFirstChild(highlightName)
+
+    if not h or not h:IsA("Highlight") then
+        h = Instance.new("Highlight")
+        h.Name = highlightName
+        h.Parent = item
+    end
+
+    h.Adornee = item
+    h.FillColor = colors[name]
+    h.OutlineColor = colors[name]
+    h.FillTransparency = transparency
+    h.OutlineTransparency = 0
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    h.Enabled = enabled[name]
+
+    tracked[name][h] = true
+    S.highlights[h] = true
+
+    return h
+end
+
+local function addGenerator(item)
+    if not item or boundGenerators[item] then return end
+    boundGenerators[item] = true
+
+    local stats = item:FindFirstChild("Stats")
+    local completed = stats and stats:FindFirstChild("Completed")
+
+    if completed and completed.Value == true then
+        return
+    end
+
+    local h = createHighlight(item, "GeneratorESP", 0.68)
+
+    if completed then
+        connect(completed:GetPropertyChangedSignal("Value"), function()
+            if completed.Value == true and h then
+                tracked.GeneratorESP[h] = nil
+                h:Destroy()
+            end
+        end)
+    end
+end
+
+local function onAdded(item)
+    if not item or not item.Parent then return end
+
+    local parentName = item.Parent.Name
+
+    if parentName == "Generators"
+        or item.Name == "Generator" then
+
+        addGenerator(item)
+
+    elseif parentName == "Items" then
+        if item.Name:find("Capsule") then return end
+
+        createHighlight(item, "ItemESP", 0.25)
+
+    elseif parentName == "Monsters" then
+        createHighlight(item, "MonsterESP", 0.68)
+    end
+end
+
+local function highlightBlotHand(hand)
+    task.spawn(function()
+        local arm = hand:WaitForChild("Arm", 5)
+
+        if arm and not S.destroyed then
+            createHighlight(arm, "MonsterESP", 0.68)
+        end
+    end)
+end
+
+local function bindBlot(entity)
+    if not entity:IsA("Part")
+        or not entity.Name:find("BlotHandZone")
+        or boundBlots[entity] then
+        return
+    end
+
+    boundBlots[entity] = true
+
+    connect(entity.ChildAdded, function(child)
+        if child:IsA("Model") then
+            highlightBlotHand(child)
+        end
+    end)
+
+    for _, child in ipairs(entity:GetChildren()) do
+        if child:IsA("Model") then
+            highlightBlotHand(child)
+        end
+    end
+end
+
+local function bindFolder(folder)
+    if boundFolders[folder] then return end
+    boundFolders[folder] = true
+
+    connect(folder.ChildAdded, onAdded)
+
+    for _, item in ipairs(folder:GetChildren()) do
+        onAdded(item)
+    end
+end
+
+local function bindRoomChild(child)
+    if child.Name == "Monsters"
+        or child.Name == "Generators"
+        or child.Name == "Items" then
+
+        bindFolder(child)
+    end
+
+    if child.Name == "Generator" then
+        onAdded(child)
+    end
+
+    bindBlot(child)
+end
+
+local function bindRoom(room)
+    if not room:IsA("Model") or boundRooms[room] then
+        return
+    end
+
+    boundRooms[room] = true
+
+    connect(room.ChildAdded, bindRoomChild)
+
+    for _, child in ipairs(room:GetChildren()) do
+        bindRoomChild(child)
+    end
+end
+
+local function getRoot(char)
+    return char and (
+        char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char.PrimaryPart
+    )
+end
+
+local function createPlayerBillboard(player, root)
+    local name = "__DistrairPlayerBillboard"
+    local bill = root:FindFirstChild(name)
+
+    if not bill or not bill:IsA("BillboardGui") then
+        bill = Instance.new("BillboardGui")
+        bill.Name = name
+        bill.Parent = root
+    end
+
+    bill.Adornee = root
+    bill.AlwaysOnTop = true
+    bill.LightInfluence = 0
+    bill.MaxDistance = 0
+    bill.Size = UDim2.fromOffset(155, 44)
+    bill.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+    bill.Enabled = enabled.PlayerESP
+
+    local holder = bill:FindFirstChild("Holder")
+
+    if not holder then
+        holder = Instance.new("Frame")
+        holder.Name = "Holder"
+        holder.Parent = bill
+    end
+
+    holder.Size = UDim2.fromScale(1, 1)
+    holder.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
+    holder.BackgroundTransparency = 0.35
+    holder.BorderSizePixel = 0
+
+    if not holder:FindFirstChildOfClass("UICorner") then
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 5)
+        corner.Parent = holder
+    end
+
+    local stroke = holder:FindFirstChildOfClass("UIStroke")
+
+    if not stroke then
+        stroke = Instance.new("UIStroke")
+        stroke.Parent = holder
+    end
+
+    stroke.Color = colors.PlayerESP
+    stroke.Thickness = 1
+    stroke.Transparency = 0.15
+
+    local function label(name, y, height, size, font)
+        local obj = holder:FindFirstChild(name)
+
+        if not obj or not obj:IsA("TextLabel") then
+            obj = Instance.new("TextLabel")
+            obj.Name = name
+            obj.Parent = holder
+        end
+
+        obj.BackgroundTransparency = 1
+        obj.Position = UDim2.fromOffset(3, y)
+        obj.Size = UDim2.new(1, -6, 0, height)
+        obj.Font = font
+        obj.TextSize = size
+        obj.TextStrokeTransparency = 0.45
+
+        return obj
+    end
+
+    local nameLabel = label(
+        "Name", 1, 20, 12, Enum.Font.GothamBold
+    )
+
+    nameLabel.TextColor3 = colors.PlayerESP
+    nameLabel.Text = player.DisplayName ~= player.Name
+        and (player.DisplayName .. " @" .. player.Name)
+        or player.Name
+
+    local info = label(
+        "Info", 20, 18, 10, Enum.Font.Gotham
+    )
+
+    info.TextColor3 = Color3.fromRGB(245, 245, 245)
+
+    S.billboards[bill] = true
+
+    return info
+end
+
+local function updatePlayer(player)
+    if player == LocalPlayer then return end
+
+    local char = player.Character
+    local root = getRoot(char)
+
+    if not char or not root then return end
+
+    createHighlight(char, "PlayerESP", 0.78)
+
+    local info = createPlayerBillboard(player, root)
+    local myRoot = getRoot(LocalPlayer.Character)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    if info and myRoot then
+        local distance = math.floor(
+            (root.Position - myRoot.Position).Magnitude + 0.5
+        )
+
+        local hp = hum
+            and math.floor(hum.Health + 0.5)
+            or 0
+
+        info.Text = tostring(distance)
+            .. "m | HP " .. tostring(hp)
+    end
+end
+
+local function bindPlayer(player)
+    if player == LocalPlayer then return end
+
+    connect(player.CharacterAdded, function()
+        task.wait(0.35)
+
+        if not S.destroyed then
+            updatePlayer(player)
+        end
+    end)
+
+    updatePlayer(player)
+end
+
+local function toggleESP(name)
+    enabled[name] = not enabled[name]
+
+    for h in pairs(tracked[name]) do
+        if h.Parent then
+            h.Enabled = enabled[name]
+            h.FillColor = colors[name]
+            h.OutlineColor = colors[name]
+            h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        else
+            tracked[name][h] = nil
+        end
+    end
+
+    if name == "PlayerESP" then
+        for bill in pairs(S.billboards) do
+            if bill.Parent then
+                bill.Enabled = enabled.PlayerESP
+            else
+                S.billboards[bill] = nil
+            end
+        end
+    end
+end
+
+function S:Destroy()
+    if self.destroyed then return end
+    self.destroyed = true
+
+    for _, connection in ipairs(self.connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    for h in pairs(self.highlights) do
+        pcall(function()
+            h:Destroy()
+        end)
+    end
+
+    for bill in pairs(self.billboards) do
+        pcall(function()
+            bill:Destroy()
+        end)
+    end
+
+    if env[KEY] == self then
+        env[KEY] = nil
+    end
+end
+
+for _, room in ipairs(CurrentRoom:GetChildren()) do
+    bindRoom(room)
+end
+
+connect(CurrentRoom.ChildAdded, bindRoom)
+
+for _, player in ipairs(Players:GetPlayers()) do
+    bindPlayer(player)
+end
+
+connect(Players.PlayerAdded, bindPlayer)
+
+connect(UIS.InputBegan, function(input, processed)
+    if processed then return end
+
+    if input.KeyCode == Enum.KeyCode.PageDown then
+        toggleESP("MonsterESP")
+
+    elseif input.KeyCode == Enum.KeyCode.PageUp then
+        toggleESP("ItemESP")
+
+    elseif input.KeyCode == Enum.KeyCode.Home then
+        toggleESP("GeneratorESP")
+
+    elseif input.KeyCode == Enum.KeyCode.Insert then
+        toggleESP("PlayerESP")
+    end
+end)
+
+task.spawn(function()
+    while not S.destroyed do
+        if enabled.PlayerESP then
+            for _, player in ipairs(Players:GetPlayers()) do
+                updatePlayer(player)
+            end
+        end
+
+        task.wait(1)
+    end
+end)
